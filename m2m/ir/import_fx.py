@@ -1240,6 +1240,13 @@ class FXImporter:
                         candidates = {value for value in candidates
                                       if row["alias_input_abi"] in value_abis.get(value, ())}
                     if len(candidates) > 1:
+                        # One source op can lower to a chain that keeps its lineage and ABI
+                        # (f32 SiLU: sigmoid, then multiply). Its result is the chain value
+                        # no other candidate consumes; dataflow, not shape, breaks the tie.
+                        consumed = {operand for value in candidates
+                                    for operand in getattr(value.owner, "operands", ())}
+                        candidates = {value for value in candidates if value not in consumed}
+                    if len(candidates) > 1:
                         raise ValueError("Ambiguous prepared identity alias input binding")
                     if not candidates:
                         remaining.append(row)
