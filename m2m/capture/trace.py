@@ -1154,6 +1154,28 @@ def _identity_conversion_bypass(source: dict[str, Any], dest: dict[str, Any],
                       "scope": "forward tensor values; autograd metadata is not certified"}}
 
 
+def _identity_broadcast(source: dict[str, Any], node: dict[str, Any]) -> dict[str, Any] | None:
+    """Prove a broadcast_tensors whose operands already have every result's exact tensor ABI is the identity."""
+    if (node.get("op") != "call_function" or node.get("target") != "aten.broadcast_tensors.default"
+            or node.get("kwargs") or len(node.get("args") or ()) != 1 or not isinstance(node["args"][0], list)):
+        return None
+    refs, results = node["args"][0], node.get("results") or []
+    if not refs or len(refs) != len(results):
+        return None
+    producers = {item["id"]: item for item in source["nodes"]}
+    fields = ("kind", "dtype", "storage_dtype", "compute_dtype", "shape", "device", "layout", "stride")
+    for ref, result in zip(refs, results):
+        if not isinstance(ref, dict):
+            return None
+        producer = producers.get(ref.get("node_id"))
+        operand = next((item for item in (producer or {}).get("results") or () if item.get("id") == ref.get("value_id")), None)
+        if operand is None or any(operand.get(field) != result.get(field) for field in fields):
+            return None
+    return {"source_ids": [node["id"]], "destination_ids": [], "kind": "eliminated",
+            "reason": "identity broadcast of exactly typed operands",
+            "proof": {"operand_value_ids": [ref["value_id"] for ref in refs]}}
+
+
 def _unused_tuple_selection(source: dict[str, Any], node: dict[str, Any]) -> dict[str, Any] | None:
     """Prove an unobserved, in-bounds tuple getitem cannot affect program output."""
     if (node.get("op") != "call_function" or node.get("target") != "<built-in function getitem>"
@@ -1831,7 +1853,8 @@ def graph_relation(source: dict[str, Any] | None, dest: dict[str, Any] | None) -
     for node in source["nodes"]:
         if node["id"] not in consumed:
             proved = (_identity_conversion_bypass(source, dest, node)
-                      or _unused_tuple_selection(source, node))
+                      or _unused_tuple_selection(source, node)
+                      or _identity_broadcast(source, node))
             if proved is not None:
                 consumed.add(node["id"])
                 relations.append(proved)
