@@ -422,6 +422,20 @@ class ImportDiagnostic:
     message: str
 
 
+def chain_result_candidates(candidates: set[Any]) -> set[Any]:
+    """Keep the values of a lineage-sharing chain that no other candidate consumes.
+
+    One source op can lower to a chain that keeps its lineage and ABI (f32 SiLU:
+    sigmoid, then multiply); its result is the chain value no other candidate
+    reads. Dataflow, not shape, breaks the tie. Independent values all survive,
+    so the caller still refuses a genuinely ambiguous binding.
+    """
+    if len(candidates) < 2:
+        return set(candidates)
+    consumed = {operand for value in candidates for operand in getattr(value.owner, "operands", ())}
+    return {value for value in candidates if value not in consumed}
+
+
 @dataclass
 class FXImporter:
     """Converts a PyTorch FX graph to an xDSL module.
@@ -1239,13 +1253,7 @@ class FXImporter:
                     if "alias_input_abi" in row:
                         candidates = {value for value in candidates
                                       if row["alias_input_abi"] in value_abis.get(value, ())}
-                    if len(candidates) > 1:
-                        # One source op can lower to a chain that keeps its lineage and ABI
-                        # (f32 SiLU: sigmoid, then multiply). Its result is the chain value
-                        # no other candidate consumes; dataflow, not shape, breaks the tie.
-                        consumed = {operand for value in candidates
-                                    for operand in getattr(value.owner, "operands", ())}
-                        candidates = {value for value in candidates if value not in consumed}
+                    candidates = chain_result_candidates(candidates)
                     if len(candidates) > 1:
                         raise ValueError("Ambiguous prepared identity alias input binding")
                     if not candidates:
